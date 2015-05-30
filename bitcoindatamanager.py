@@ -52,6 +52,48 @@ class Block:
         self.size = Block.size
         self.nonce = Block.nonce
 
+#
+class ScriptSig:
+    hex = None
+    asm = None
+    def __init__(self):
+        pass
+
+class InputTx:
+    sequence = None
+    scriptSig = None
+    vout = None
+    txid = None
+    value = None
+    def __init__(self):
+        pass
+
+class scriptPubKey:
+    reqSigs = None
+    hex = None
+    addresses = None
+    asm = None 
+    type = None
+    def __init__(self):
+        pass
+    
+class OutputTx:
+    scriptPubKey = None
+    value = None 
+    n = None
+    
+    def __init__(self):
+        pass
+
+class Tx:
+    tx_id_hash = None
+    version = None
+    vin_size = None
+    vout_size = None
+    locktime = None
+    vin = InputTx()
+    def __init__(self):
+        pass
 
 def connect_to_bitcoin_RPC():
     # rpc_user and rpc_password are set in the bitcoin.conf file
@@ -69,6 +111,11 @@ def get_current_block_height():
     block_height = counts[0]
     return block_height
 
+def get_block_hash(block_height):
+    commands = [ [ "getblockhash", block_height] ]
+    block_hash = rpc_connection.batch_(commands)[0]
+    return block_hash
+    
 def get_all_block_hashes():
     block_height = get_current_block_height()
     commands = [ [ "getblockhash", height] for height in range(block_height) ]
@@ -106,7 +153,7 @@ def get_block_info(block_hash, height = 0):
     block.merkleroot = blk["merkleroot"]
     block.hash = block_hash 
     block.version = blk["version"]
-    block.block_tx_hashes = [txh for txh in blk["tx"]]
+    block.tx_hashes = [txh for txh in blk["tx"]]
     block.num_tx = len(blk["tx"])
     block.height = blk["height"]
     block.difficulty = int(blk["difficulty"])
@@ -166,14 +213,56 @@ def update_block_info():
                 print "MySQL Error: %s" % str(e)
                 sys.exit(1)
 #
+
+def get_transaction_info(tx_hash):
+    commands = [ [ "getrawtransaction", tx_hash ] ]
+    raw_tx = rpc_connection.batch_(commands)[0]
+    commands = commands = [ [ "decoderawtransaction", raw_tx ] ]
+    tx = rpc_connection.batch_(commands)[0]
+    return tx
+
+def update_block_transaction_info(block_height):
+    block_hash = get_block_hash(block_height)
+    block = get_block_info(block_hash, block_height)
+    print block_hash
+    num_tx = block.num_tx
+    print num_tx
+    tx_hashes = block.tx_hashes
+    
+    
+    for i in xrange(1,num_tx):
+        tx_info = get_transaction_info(tx_hashes[i])
+        break
+        try: 
+            cursor = connection.cursor()
+            warning = cursor.execute("""INSERT IGNORE INTO `block_info`(`height`, `hash`, `next_block_hash`, `time`,
+                    `difficulty`, `bits`, `num_tx`, `size`, `merkle_root`, `nonce`, `version`, `confirmations`) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);""", 
+                    (block.height, block.hash, block.nextblockhash, block.time, 
+                     block.difficulty, block.bits, block.num_tx, block.size, 
+                     block.merkleroot, block.nonce, block.version, block.confirmations))
+            if warning:
+                print "Success inserting block at height ", block_height
+            else:
+                print "Block less than height ", block_height, "already exists. Stopping Insertion. Exiting."
+                break
+#
+            connection.commit()
+        except mdb.Error,e:
+            try:
+                print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+            except IndexError:
+                print "MySQL Error: %s" % str(e)
+                sys.exit(1)
           
 def main():
     # parse command line options
     try:
         connect_to_bitcoin_RPC()
-        get_all_block_hashes_from_present_to_past()
+        #get_all_block_hashes_from_present_to_past()
         connect_to_my_SQL()
-        update_block_info()
+        #update_block_info()
+        update_block_transaction_info(118147)
     except getopt.error, msg:
         print msg
         print "for help use --help"
