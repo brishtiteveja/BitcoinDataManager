@@ -4,7 +4,7 @@ import getopt
 import MySQLdb as mdb
 
 from bitcoinrpc.authproxy import AuthServiceProxy
-
+from pprint import pprint
 
 
 #Variable initial declaration
@@ -52,48 +52,6 @@ class Block:
         self.size = Block.size
         self.nonce = Block.nonce
 
-#
-class ScriptSig:
-    hex = None
-    asm = None
-    def __init__(self):
-        pass
-
-class InputTx:
-    sequence = None
-    scriptSig = None
-    vout = None
-    txid = None
-    value = None
-    def __init__(self):
-        pass
-
-class scriptPubKey:
-    reqSigs = None
-    hex = None
-    addresses = None
-    asm = None 
-    type = None
-    def __init__(self):
-        pass
-    
-class OutputTx:
-    scriptPubKey = None
-    value = None 
-    n = None
-    
-    def __init__(self):
-        pass
-
-class Tx:
-    tx_id_hash = None
-    version = None
-    vin_size = None
-    vout_size = None
-    locktime = None
-    vin = InputTx()
-    def __init__(self):
-        pass
 
 def connect_to_bitcoin_RPC():
     # rpc_user and rpc_password are set in the bitcoin.conf file
@@ -224,14 +182,14 @@ def get_transaction_info(tx_hash):
 def update_block_transaction_info(block_height):
     block_hash = get_block_hash(block_height)
     block = get_block_info(block_hash, block_height)
-    print block_hash
     num_tx = block.num_tx
-    print num_tx
     tx_hashes = block.tx_hashes
     
     
     for i in xrange(1,num_tx):
         tx_info = get_transaction_info(tx_hashes[i])
+        pprint(tx_info)
+        vin = tx_info
         break
         try: 
             cursor = connection.cursor()
@@ -259,7 +217,7 @@ def main():
     # parse command line options
     try:
         connect_to_bitcoin_RPC()
-        #get_all_block_hashes_from_present_to_past()
+        get_all_block_hashes_from_present_to_past()
         connect_to_my_SQL()
         #update_block_info()
         update_block_transaction_info(118147)
@@ -269,4 +227,5 @@ def main():
         sys.exit(2)
 
 if __name__ == "__main__":
-    main() 
+    main()  
+    
