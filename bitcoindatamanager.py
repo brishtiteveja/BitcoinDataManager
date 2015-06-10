@@ -5,8 +5,6 @@ import MySQLdb as mdb
 
 from bitcoinrpc.authproxy import AuthServiceProxy
 from pprint import pprint
-from __builtin__ import None
-from pickle import NONE
 
 
 #Variable initial declaration
@@ -14,11 +12,11 @@ from pickle import NONE
 rpc_connection = None
 
 #block variables 
-block_height = 0
+block_height = -1
 block_hashes = []
 
 #transaction id
-tx_id = 0
+tx_id = -1
 
 #MySQL variable
 height_in_db = 0
@@ -58,22 +56,34 @@ class Block:
         self.size = blk.size
         self.nonce = blk.nonce
         
-class Script:
-    asm = None 
-    hex = None 
+class ScriptSig:
+    script_asm = None 
+    script_hex = None 
     
-    def __init__(self):
-        pass
-    def copyScript(self, asm, hex):
-        self.asm = asm
-        self.hex = hex
-
+    def __init__(self, script_asm, script_hex):
+        self.script_asm = script_asm
+        self.script_hex = script_hex
+        
+class ScriptPubKey:
+    addrs = []
+    script_asm = None 
+    script_hex = None 
+    script_reqSigs = None
+    script_type = None
+    def __init__(self, addrs, script_asm, script_hex, script_reqSigs, script_type):
+        self. addrs = [a for a in addrs]
+        self.script_asm = script_asm
+        self.script_hex = script_hex
+        self.script_reqSigs = script_reqSigs
+        self.script_type = script_type
+    
 # Input Transaction class definition 
 class TxIn:
     id = None 
     n = None # n-th input address in the input section of the transaction
     addrs = [] 
-    scriptSig = Script()
+    coinbase = None
+    scriptSig = None
     sequence = None
     tx_hash_prev = None 
     vout_prev = None
@@ -84,8 +94,9 @@ class TxIn:
     def copyTxIn(self, ti):
         self.id = ti.id
         self.n = ti.n 
-        self.addr = [ti.addr[i] for i in range(len(ti.addrs))] 
-        self.scriptSig = Script(ti.scriptSig.asm,ti.scriptSig.hex) 
+        self.addr = [ti.addr[i] for i in range(len(ti.addrs))]
+        self.coinbase = ti.coinbase
+        self.scriptSig = ti.scriptSig
         self.sequence = ti.sequence 
         self.tx_hash_prev = ti.tx_hash_prev 
         self.vout_prev = ti.vout_prev 
@@ -95,10 +106,7 @@ class TxIn:
 class TxOut:
     id = None 
     n = None # n-th input address in the input section of the transaction
-    addrs = [] 
-    scriptPubKey = Script()
-    reqSigs = None
-    type = None 
+    scriptPubKey = None
     vals = [] 
     
     def __init__(self):
@@ -106,11 +114,8 @@ class TxOut:
     def copyTxOut(self, to):
         self.id = to.id
         self.n = to.n 
-        self.addrs = [to.addrs[i] for i in range(len(to.addrs))]
-        self.scriptPubKey = (to.scriptPubKey.asm, to.scriptPubKey.hex)
-        self.reqSigs = to.reqSigs 
-        self.type = to.type 
-        self.vals = [to.vals[i] for i in range(len(to.vals))] 
+        self.scriptPubKey = to.scriptPubKey
+        self.vals = [v for v in to.vals] 
 
 # Transaction class definition
 class Tx:
@@ -242,7 +247,7 @@ def update_block_info():
     for n, block_hash in enumerate(block_hashes):
         height = block_height - n
         block = get_block_info(block_hash, height)
-        print_block_info(block)
+#         print_block_info(block)
         try: 
             cursor = connection.cursor()
             if height > height_in_db:
@@ -255,6 +260,9 @@ def update_block_info():
                      block.merkleroot, block.nonce, block.version, block.confirmations))
                 if warning:
                     print "Success inserting block at height ", height
+                else:
+                    print str(warning) + " -  Row already exists!! "
+                    print "Failed inserting block at height ", height
             else:
                 print "Block less than height ", height, "already exists. Stopping Insertion. Exiting."
                 break
@@ -295,8 +303,9 @@ def update_block_transaction_info(block_height):
         tx.locktime = tx_info["locktime"]
         tx.version = tx_info["version"]
         
-        if tx.hash != "b9a5890b4821450eae5b0e3e2b7f2acaf296085d74e7267e837c2598a977c49a":
-            continue
+        #to be deleted, don't delete now
+#         if tx.hash != "b9a5890b4821450eae5b0e3e2b7f2acaf296085d74e7267e837c2598a977c49a":
+#             continue
         
         vin = tx_info["vin"]
         tx.num_inputs = len(vin)
@@ -310,28 +319,111 @@ def update_block_transaction_info(block_height):
             txIn = TxIn()
             
             txIn.id = tx.id
-            txIn.n = in_i;            
-            txIn.tx_hash_prev = vin[in_i]["txid"]
-
-            prev_tx = get_transaction_info(txIn.tx_hash_prev)
-            txIn.vout_prev = vin[in_i]["vout"]
-            prev_tx_vout = prev_tx["vout"][txIn.vout_prev]
-         
-            #Getting input addresses
-            prev_tx_vout_scriptPubKey = prev_tx_vout["scriptPubKey"]
-            in_addrs = prev_tx_vout_scriptPubKey["addresses"]
+            txIn.n = in_i;
+            txIn.sequence = vin[in_i]["sequence"]
+ 
+            if "coinbase" in vin[in_i].keys():
+                txIn.coinbase = vin[in_i]["coinbase"]
+            else:
+                txIn.coinbase = "None"
+                
+            if "scriptSig" in vin[in_i].keys():
+                scriptSig = vin[in_i]["scriptSig"]
+                script_asm = scriptSig["asm"]
+                script_hex = scriptSig["hex"]
+                txIn.scriptSig = ScriptSig(script_asm, script_hex)
+            else:
+                coinbase_msg = "coinbase@block-height:" + str(block_height) + "@tx:" + str(txIn.id) + "@input:" + str(txIn.n)
+                txIn.scriptSig = ScriptSig(coinbase_msg, coinbase_msg)
+                
+            in_addrs = []
+            if "txid" in vin[in_i].keys():           
+                txIn.tx_hash_prev = vin[in_i]["txid"]
+                prev_tx = get_transaction_info(txIn.tx_hash_prev)
             
-             
-            for a in in_addrs:
+                if "vout" in vin[in_i].keys():
+                    txIn.vout_prev = vin[in_i]["vout"]
+                    prev_tx_vout = prev_tx["vout"][txIn.vout_prev]
+         
+                    #Getting input addresses
+                    prev_tx_vout_scriptPubKey = prev_tx_vout["scriptPubKey"]
+                    in_addrs = prev_tx_vout_scriptPubKey["addresses"]
+                    vals = prev_tx_vout["value"]
+                    for val in vals:
+                        txIn.vals.append(val)
+            else:
+                txIn.tx_hash_prev = "None"
+                txIn.vout_prev = -1
+            
+            if "coinbase" in vin[in_i].keys(): #adding coingen as an address in case of coinbase transaction
+                in_addrs.append("coingen")
+                txIn.vals.append(0) 
+            for i,a in enumerate(in_addrs):
                 txIn.addrs.append(a)
             
-            scriptSig = vin[in_i]["scriptSig"]
-            print scriptSig
-            break 
-            txIn.scriptSig = Script()
-             
-#             print in_addrs
-#             break
+                try: 
+                    cursor = connection.cursor()
+                    warning = cursor.execute("""INSERT IGNORE INTO `tx_in`(`tx_id`, `n`, `addr`, `coinbase`, `scriptSig_asm`,
+                        `scriptSig_hex`, `sequence`, `tx_hash_prev`, `vout_prev`, `val`) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);""", 
+                        (txIn.id, txIn.n, str(a), txIn.coinbase, txIn.scriptSig.script_asm, 
+                         txIn.scriptSig.script_hex, txIn.sequence, txIn.tx_hash_prev, 
+                         txIn.vout_prev, txIn.vals[i]))
+                    if warning:
+                        print "Success inserting input transaction."
+                    else:
+                        print str(warning) + " -  Row already exists!! "
+                        print "Failed to insert input transaction."
+                        break
+                    connection.commit()
+                except mdb.Error,e:
+                    try:
+                        print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+                    except IndexError:
+                        print "MySQL Error: %s" % str(e)
+                        sys.exit(1)
+
+        for out_i in range(tx.num_outputs):
+            txOut = TxOut()
+            
+            txOut.id = tx.id
+            txOut.n = out_i;            
+            
+            scriptPubKey = vout[out_i]["scriptPubKey"]
+            out_asm = scriptPubKey["asm"]
+            out_hex = scriptPubKey["hex"]
+            out_addrs = scriptPubKey["addresses"]
+            out_reqSigs = scriptPubKey["reqSigs"]
+            out_type = scriptPubKey["type"]
+            txOut.scriptPubKey = ScriptPubKey(out_addrs, out_asm, out_hex, out_reqSigs, out_type)
+            
+            for a in txOut.scriptPubKey.addrs:
+                val = vout[out_i]["value"]
+                txOut.vals.append(val)
+            
+                try: 
+                    cursor = connection.cursor()
+                    warning = cursor.execute("""INSERT IGNORE INTO `tx_out`(`tx_id`, `n`, `addr`, `scriptPubKey_asm`,
+                        `scriptPubKey_hex`, `reqSigs`, `type`, `val`) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s);""", 
+                        (txOut.id, txOut.n, str(a), txOut.scriptPubKey.script_asm, 
+                         txOut.scriptPubKey.script_hex, txOut.scriptPubKey.script_reqSigs, 
+                         txOut.scriptPubKey.script_type, str(val)))
+                    if warning:
+                        print "Success inserting output transaction."
+                    else:
+                        print str(warning) + " -  Row already exists!! "
+                        print "Failed to insert output transaction."
+                        break
+                    connection.commit()
+                except mdb.Error,e:
+                    try:
+                        print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+                    except IndexError:
+                        print "MySQL Error: %s" % str(e)
+                        sys.exit(1)
+            
+        break
 # #         for in_i in prev_tx_vout[
 # 
 # #         process vout
@@ -344,8 +436,8 @@ def update_block_transaction_info(block_height):
 #             pprint(prev_tx_vout)
 #             prev_tx_vout_scriptPubKey = prev_tx_vout["scriptPubKey"]
 #             in_addr = prev_tx_vout_scriptPubKey["addresses"]
-#             in_asm = prev_tx_vout_scriptPubKey["asm"]
-#             in_hex = prev_tx_vout_scriptPubKey["hex"]
+#             script_asm = prev_tx_vout_scriptPubKey["asm"]
+#             script_hex = prev_tx_vout_scriptPubKey["hex"]
 #             in_reqSigs = prev_tx_vout_scriptPubKey["reqSigs"]
 #             in_type = prev_tx_vout_scriptPubKey["type"] 
 #             
@@ -385,7 +477,7 @@ def main():
         #get_all_block_hashes_from_present_to_past()
         connect_to_my_SQL()
         #update_block_info()
-        update_block_transaction_info(358985)
+        update_block_transaction_info(3)
     except getopt.error, msg:
         print msg
         print "for help use --help"
