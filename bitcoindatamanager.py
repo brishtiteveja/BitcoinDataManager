@@ -168,7 +168,7 @@ def get_current_block_height():
     return block_height
 
 def get_current_total_transaction():
-    global connection, height_in_db, tx_id, addr_id
+    global connection, tx_id
     cursor = connection.cursor()
     if (cursor.execute("""SELECT MAX(tx_id) from tx;""")):
         data = cursor.fetchall()
@@ -178,7 +178,7 @@ def get_current_total_transaction():
     return tx_id
 
 def get_current_total_address():
-    global connection, height_in_db, tx_id, addr_id
+    global connection, addr_id
     cursor = connection.cursor()
     if (cursor.execute("""SELECT MAX(addr_id) from addresses;""")):
         data = cursor.fetchall()
@@ -204,10 +204,9 @@ def get_all_block_hashes():
 
 def get_all_block_hashes_from_present_to_past():
     block_height = get_current_block_height()
-    commands = [ [ "getblockhash", height] for height in range(block_height) ]
+    commands = [ [ "getblockhash", height] for height in range(block_height + 1) ]
     global block_hashes, rpc_connection
     block_hashes = rpc_connection.batch_(commands)
-    block_hashes = reversed(block_hashes)
     return block_hashes
 
 def get_block_time(block_height):
@@ -217,8 +216,11 @@ def get_block_time(block_height):
     return block_time
 
 def connect_to_my_SQL():
-    global connection, height_in_db, tx_id, addr_id
+    global connection
     connection = mdb.connect('127.0.0.1', 'root', 'AAAnandaaa05950233;', 'brishtit_bitcoin');
+    
+def get_current_block_height_in_db():
+    height_in_db = -1
     cursor = connection.cursor()
     if (cursor.execute("""SELECT MAX(height) from block_info;""")):
         data = cursor.fetchall()
@@ -226,8 +228,8 @@ def connect_to_my_SQL():
             height_in_db = row[0]
             break
     else:
-        print "Maximum block height can not be retrieved."
-        sys.exit(1)
+        print "No block yet."
+    return height_in_db 
 
 def get_block_info(block_hash, height = 0):
     blk = rpc_connection.getblock(block_hash)
@@ -269,31 +271,34 @@ def print_block_info(block):
     print "Nonce = ", block.nonce
     print("Bits = ", block.bits)
         
-def update_block_info():    
-    for n, block_hash in enumerate(block_hashes):
-        height = block_height - n
+def update_block_info():
+    global height_in_db
+    height_in_db = get_current_block_height_in_db()   
+    
+    if (height_in_db + 1 == block_height):
+        print "All blocks are up to date."
+                                           
+    for height in xrange(height_in_db + 1, block_height + 1):
+        block_hash = block_hashes[height]
         block = get_block_info(block_hash, height)
 #         print_block_info(block)
         try: 
             global connection
             cursor = connection.cursor()
-            if height > height_in_db:
 #               Inserting Block info into block_info table
-                warning = cursor.execute("""INSERT IGNORE INTO `block_info`(`height`, `hash`, `next_block_hash`, `time`,
+            warning = cursor.execute("""INSERT IGNORE INTO `block_info`(`height`, `hash`, `next_block_hash`, `time`,
                     `difficulty`, `bits`, `num_tx`, `size`, `merkle_root`, `nonce`, `version`, `confirmations`) 
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);""", 
                     (block.height, block.hash, block.nextblockhash, block.time, 
                      block.difficulty, block.bits, block.num_tx, block.size, 
                      block.merkleroot, block.nonce, block.version, block.confirmations))
-                if warning:
-                    print "Success inserting block at height ", height
-                else:
-                    print str(warning) + " -  Row already exists!! "
-                    print "Failed inserting block at height ", height
+            if warning:
+                print "Success inserting block at height ", height
+#                 updating all other tables: tx, txin, txout, addresses, degree, balance, address_graph
+                update_block_transaction_info(height)
             else:
-                print "Block less than height ", height, "already exists. Stopping Insertion. Exiting."
-                break
-#
+                print str(warning) + " -  Row already exists!! "
+                print "Failed inserting block at height ", height
             connection.commit()
         except mdb.Error,e:
             try:
@@ -301,7 +306,7 @@ def update_block_info():
             except IndexError:
                 print "MySQL Error: %s" % str(e)
                 sys.exit(1)
-#
+
 
 def get_transaction_info(tx_hash):
     commands = [ [ "getrawtransaction", tx_hash ] ]
@@ -720,8 +725,8 @@ def main():
         connect_to_my_SQL()
         delete_all_data()
         connect_to_bitcoin_RPC()
-#         get_all_block_hashes_from_present_to_past()
-#         update_block_info()
+        get_all_block_hashes_from_present_to_past()
+        #update_block_info()
         update_block_transaction_info(298897)
     except getopt.error, msg:
         print msg
