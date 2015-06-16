@@ -12,13 +12,13 @@ from pprint import pprint
 rpc_connection = None
 
 #block variables 
-block_height = -1
+block_height = 0
 block_hashes = []
 
 #transaction id
-tx_id = -1
+tx_id = 0 
 #address id
-addr_id = -1
+addr_id = 0
 
 #MySQL variable
 height_in_db = 0
@@ -109,6 +109,7 @@ class TxOut:
     id = None 
     n = None # n-th input address in the input section of the transaction
     scriptPubKey = None
+    addrs = []
     vals = [] 
     
     def __init__(self):
@@ -275,6 +276,10 @@ def update_block_info():
     global height_in_db
     height_in_db = get_current_block_height_in_db()   
     
+    if height_in_db == None:
+        height_in_db = 0
+    
+    global block_height
     if (height_in_db + 1 == block_height):
         print "All blocks are up to date."
                                            
@@ -296,6 +301,8 @@ def update_block_info():
                 print "Success inserting block at height ", height
 #                 updating all other tables: tx, txin, txout, addresses, degree, balance, address_graph
                 update_block_transaction_info(height)
+                print "All transaction for block at ", height, " is completed."
+#              
             else:
                 print str(warning) + " -  Row already exists!! "
                 print "Failed inserting block at height ", height
@@ -450,38 +457,42 @@ def update_addresses(addr):
             sys.exit(1)
 
 def update_address_graph(txInList, txOutList, time):
-    for i in xrange(0, len(txInList)):
-        txIn = txInList[i]
-        for j in xrange(0, len(txOutList)):
-            txOut = txOutList[j]
+        for j in xrange(0, len(txInList)): #txInList and txOutList size = number of tx in a block
+            txIns = txInList[j]
+            txOuts = txOutList[j]
             
-            tx_id = txOut.id
-            in_addr = txIn.addr
-            out_addr = txOut.addr
-            in_val = txIn.val
-            out_val = txOut.val
-            tx_time = time
+            tx_time = time # block time
             
-            try: 
-                global connection
-                cursor = connection.cursor()
-                warning = cursor.execute("""INSERT INTO `address_graph`(`tx_id`, `in_addr_id`, `in_val`, `out_addr_id`, `out_val`, `tx_time`) 
-                    VALUES (%s, %s, %s, %s, %s, %s);""", 
-                    (str(tx_id), str(in_addr), str(in_val), str(out_addr), str(out_val), str(tx_time)))
-                if warning:
-                    print "Success inserting edge into address graph."
-                else:
-                    print "Failed to insert edge into address graph."
-                connection.commit()
-            except mdb.Error,e:
-                try:
-                    print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
-                except IndexError:
-                    print "MySQL Error: %s" % str(e)
-                    sys.exit(1)
-
-            
-            
+            for txIn in txIns: # Though only one address
+                in_addrs = txIn.addrs
+                in_vals = txIn.vals
+                for txOut in txOuts: # Though only one address
+                    out_addrs = txOut.addrs
+                    out_vals = txOut.vals
+                    
+                    tx_id = txOut.id # transaction index in the block
+                    for m, in_addr in enumerate(in_addrs):
+                        in_val = in_vals[m]
+                        for n, out_addr in enumerate(out_addrs):
+                            out_val = out_vals[n]
+                            try: 
+                                global connection
+                                cursor = connection.cursor()
+                                warning = cursor.execute("""INSERT INTO `address_graph`(`tx_id`, `in_addr_id`, `in_val`, `out_addr_id`, `out_val`, `tx_time`) 
+                                    VALUES (%s, %s, %s, %s, %s, %s);""", 
+                                    (str(tx_id), str(in_addr), str(in_val), str(out_addr), str(out_val), str(tx_time)))
+                                if warning:
+                                    print "Success inserting edge into address graph."
+                                    pass
+                                else:
+                                    print "Failed to insert edge into address graph."
+                                connection.commit()
+                            except mdb.Error,e:
+                                try:
+                                    print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+                                except IndexError:
+                                    print "MySQL Error: %s" % str(e)
+                                sys.exit(1) 
             
 
 def update_block_transaction_info(block_height):
@@ -489,6 +500,11 @@ def update_block_transaction_info(block_height):
     block = get_block_info(block_hash, block_height)
     num_tx = block.num_tx
     tx_hashes = block.tx_hashes
+    
+    txIns = []
+    txInList = [txIns] * num_tx
+    txOuts = []
+    txOutList = [txOuts] * num_tx
     
     for i in range(num_tx):
         tx_info = get_transaction_info(tx_hashes[i])
@@ -523,7 +539,7 @@ def update_block_transaction_info(block_height):
         tx.total_out_val = 0
         
 #         process vin
-        txInList = []
+        txIns = []
         for in_i in range(tx.num_inputs):
             txIn = TxIn()
             
@@ -546,6 +562,7 @@ def update_block_transaction_info(block_height):
                 txIn.scriptSig = ScriptSig(coinbase_msg, coinbase_msg)
                 
             in_addrs = []
+            txIn.vals = []
             if "txid" in vin[in_i].keys():           
                 txIn.tx_hash_prev = vin[in_i]["txid"]
                 prev_tx = get_transaction_info(txIn.tx_hash_prev)
@@ -569,7 +586,9 @@ def update_block_transaction_info(block_height):
             if "coinbase" in vin[in_i].keys(): #adding coingen as an address in case of coinbase transaction
                 in_addrs.append("coingen")
                 txIn.vals.append(0) 
-                
+            
+            print "address size = ", (in_addrs)
+            txIn.addrs = [] 
             for i,a in enumerate(in_addrs):
                 txIn.addrs.append(a)
                     
@@ -602,9 +621,10 @@ def update_block_transaction_info(block_height):
                     except IndexError:
                         print "MySQL Error: %s" % str(e)
                         sys.exit(1)
-            txInList.append(txIn)
+            txIns.append(txIn)            
+        txInList.append(txIns)
             
-        txOutList = []    
+        txOuts = []    
 #         process vout
         for out_i in range(tx.num_outputs):
             txOut = TxOut()
@@ -619,8 +639,11 @@ def update_block_transaction_info(block_height):
             out_reqSigs = scriptPubKey["reqSigs"]
             out_type = scriptPubKey["type"]
             txOut.scriptPubKey = ScriptPubKey(out_addrs, out_asm, out_hex, out_reqSigs, out_type)
-            
+           
+            txOut.addrs = []
+            txOut.vals = []
             for a in txOut.scriptPubKey.addrs:
+                txOut.addrs.append(a)
                 val = float(vout[out_i]["value"])
                 txOut.vals.append(val)
                 tx.total_out_val += val
@@ -653,9 +676,10 @@ def update_block_transaction_info(block_height):
                     except IndexError:
                         print "MySQL Error: %s" % str(e)
                         sys.exit(1)
-            txOutList.append(txOut)
+            txOuts.append(txOut)
+        txOutList.append(txOuts)
             
-            update_address_graph(txInList, txOutList, tx.block_time)
+        update_address_graph(txInList, txOutList, tx.block_time)
                     
 #        trying to insert into tx table
         try: 
@@ -704,6 +728,8 @@ def delete_all_data():
     
     if (cursor.execute("""delete from addresses;""")):
         table_delete_count += 1
+    if (cursor.execute("""delete from address_graph;""")):
+        table_delete_count += 1
     
     if (cursor.execute("""delete from user_graph_heuristic1;""")):
         table_delete_count += 1
@@ -716,7 +742,7 @@ def delete_all_data():
     if (cursor.execute("""delete from user_id_heuristic2;""")):
         table_delete_count += 1
         
-    if table_delete_count == 11:
+    if table_delete_count == 12:
         print "All data deleted."
     
 def main():
@@ -726,8 +752,8 @@ def main():
         delete_all_data()
         connect_to_bitcoin_RPC()
         get_all_block_hashes_from_present_to_past()
-        #update_block_info()
-        update_block_transaction_info(298897)
+        update_block_info()
+        #update_block_transaction_info(298897)
     except getopt.error, msg:
         print msg
         print "for help use --help"
