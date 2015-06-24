@@ -5,6 +5,7 @@ import MySQLdb as mdb
 
 from bitcoinrpc.authproxy import AuthServiceProxy
 from pprint import pprint
+from numpy import double
 
 
 #Variable initial declaration
@@ -573,7 +574,10 @@ def update_block_transaction_info(block_height):
          
 #                     Getting input addresses
                     prev_tx_vout_scriptPubKey = prev_tx_vout["scriptPubKey"]
-                    in_addrs = prev_tx_vout_scriptPubKey["addresses"]
+                    if "addresses" in prev_tx_vout_scriptPubKey.keys():
+                        in_addrs = prev_tx_vout_scriptPubKey["addresses"]
+                    else:
+                        in_addrs =["Undecoded Input Address"]
                     
                     val = float(prev_tx_vout["value"])
                     tx.total_in_val += val
@@ -587,9 +591,14 @@ def update_block_transaction_info(block_height):
                 in_addrs.append("coingen")
                 txIn.vals.append(0) 
             
-            print "address size = ", (in_addrs)
             txIn.addrs = [] 
             for i,a in enumerate(in_addrs):
+                if "coinbase" not in vin[in_i].keys():
+                    update_addresses(a)
+                    a = get_address_id(a)
+                else:
+                    a = 0
+                    
                 txIn.addrs.append(a)
                     
 #                 trying to insert into tx_in table
@@ -606,7 +615,6 @@ def update_block_transaction_info(block_height):
                         
 #                         update input address and its degree
                         if "coinbase" not in vin[in_i].keys():
-                            update_addresses(a)
                             update_address_degree(a, 0, tx.num_outputs)
                             update_address_balance(a, -val, tx.id, tx.block_time)
                 
@@ -635,14 +643,30 @@ def update_block_transaction_info(block_height):
             scriptPubKey = vout[out_i]["scriptPubKey"]
             out_asm = scriptPubKey["asm"]
             out_hex = scriptPubKey["hex"]
-            out_addrs = scriptPubKey["addresses"]
-            out_reqSigs = scriptPubKey["reqSigs"]
-            out_type = scriptPubKey["type"]
+            if "addresses" in scriptPubKey.keys():
+                out_addrs = scriptPubKey["addresses"]
+            else:
+                out_addrs = ["Undecoded Output Address"]
+            
+            if "reqSigs" in scriptPubKey.keys():
+                out_reqSigs = scriptPubKey["reqSigs"]
+            else:
+                out_reqSigs = "No reqSigs"
+            
+            if "type" in scriptPubKey.keys():
+                out_type = scriptPubKey["type"]
+            else:
+                out_type = "No type"
             txOut.scriptPubKey = ScriptPubKey(out_addrs, out_asm, out_hex, out_reqSigs, out_type)
            
             txOut.addrs = []
             txOut.vals = []
             for a in txOut.scriptPubKey.addrs:
+                #update address table
+                update_addresses(a)
+                #get address_id from the address table
+                a = int(get_address_id(a))
+                
                 txOut.addrs.append(a)
                 val = float(vout[out_i]["value"])
                 txOut.vals.append(val)
@@ -660,8 +684,7 @@ def update_block_transaction_info(block_height):
                     if warning:
                         print "Success inserting output transaction."
                         
-#                         update output address and its degree
-                        update_addresses(a)
+#                         update output address degree and balance
                         update_address_degree(a, tx.num_inputs, 0)
                         update_address_balance(a, val, tx.id, tx.block_time)
                 
@@ -703,6 +726,86 @@ def update_block_transaction_info(block_height):
                 print "MySQL Error: %s" % str(e)
                 sys.exit(1)
 
+def get_all_txids_for_block(block_id):
+    global connection 
+    cursor = connection.cursor()
+    info_tx_ids = []
+    if (cursor.execute("""SELECT `tx_id`,`num_inputs`,`num_outputs` FROM tx WHERE `block_id` = %s;""", block_id)):
+        data = cursor.fetchall()
+        for row in data:
+            tpl = (row[0],row[1],row[2])
+            info_tx_ids.append(tpl)
+    return info_tx_ids
+
+def update_balance_table_for_addr(addr, val, increase):    
+    global connection 
+    cursor = connection.cursor()
+    
+    addr_id = get_address_id()    
+    if (cursor.execute("""SELECT `balance` FROM balance WHERE `addr_id` = %s;""", str(addr))):
+        data = cursor.fetchall()
+        for row in data:
+            print row[0]
+#             old_balance = double(row[0])
+#             print old_balance
+#             if increase:
+#                 new_balance = old_balance + val
+#             else:
+#                 new_balance = old_balance - val
+#             print new_balance
+#             print ""
+#             warning = cursor.execute("""UPDATE balance SET `balance` = %s WHERE `addr_id` = %s;""", tx_id, new_balance)
+#             if warning:
+#                 print "Successfully updated the address balance."
+#             else:
+#                 print "Failed to update the address balance."
+
+def update_degree_table_for_addr(addr, num_outputs, out_degree):
+    global connection 
+    cursor = connection.cursor()
+    
+    if out_degree:    
+        if (cursor.execute("""SELECT out_degree FROM degree WHERE `addr_id` = %s;""", addr)):
+            data = cursor.fetchall()
+            for row in data:
+                old_degree = row[0]
+                new_degree = old_degree - num_outputs
+            
+                warning = cursor.execute("""UPDATE degree SET `degree` = %s WHERE `addr_id` = %s;""", new_degree, addr)
+                if warning:
+                    print "Successfully decreased the out degree for the input address."
+                else:
+                    print "Failed to update the out degree for the input address."
+
+def update_tables_using_txin_table(info_tx_id):
+    (tx_id, num_inputs, num_outputs) = info_tx_id
+    
+    global connection 
+    cursor = connection.cursor()
+    tx_ids = []
+    if (cursor.execute("""SELECT tx_id, addr, val FROM tx_in WHERE `tx_id` = %s;""", tx_id)):
+        data = cursor.fetchall()
+        for row in data:
+            (tx_id, in_addr, in_val) = (row[0], row[1], row[2])
+            if "coingen" in in_addr:
+                print "Nothing to do for coingen address."
+            else:
+                print "Update"
+            update_balance_table_for_addr(in_addr, in_val, True)
+#             update_degree_table_for_addr(in_addr, num_inputs, True)
+
+def delete_block_data_and_update_tables(block_id):
+    global height_in_db
+    #Get the last block id in the database
+    height_in_db = get_current_block_height_in_db()
+    #Get all the tx_ids for the last block
+    info_tx_ids = get_all_txids_for_block(height_in_db)
+    #print info_tx_ids
+    # Get input addresses from tx_in
+    for info_tx_id in info_tx_ids:
+        update_tables_using_txin_table(info_tx_id)
+     
+    
 def delete_all_data():
     global connection
     cursor = connection.cursor()
@@ -749,11 +852,11 @@ def main():
 #     parse command line options
     try:
         connect_to_my_SQL()
-        delete_all_data()
         connect_to_bitcoin_RPC()
-        get_all_block_hashes_from_present_to_past()
-        update_block_info()
-        #update_block_transaction_info(298897)
+        #get_all_block_hashes_from_present_to_past()
+        #update_block_info()
+        #update_block_transaction_info(71036)
+        delete_block_data_and_update_tables(133074)
     except getopt.error, msg:
         print msg
         print "for help use --help"
