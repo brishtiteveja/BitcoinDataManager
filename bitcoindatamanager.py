@@ -277,6 +277,13 @@ def update_block_info():
     global height_in_db
     height_in_db = get_current_block_height_in_db()   
     
+    
+    # deleteing last two blocks and updating balance and degree table before synchronizing again
+    if height_in_db != None and height_in_db >= 2:
+        for blk_id in xrange(height_in_db - 2 + 1, height_in_db + 1):
+            delete_block_data_and_update_tables(blk_id)
+    
+    height_in_db = get_current_block_height_in_db()
     if height_in_db == None:
         height_in_db = 0
     
@@ -323,6 +330,17 @@ def get_transaction_info(tx_hash):
     tx = rpc_connection.batch_(commands)[0]
     return tx
 
+def get_address_from_id(addr_id):
+    global connection 
+    cursor = connection.cursor()
+    addr = None 
+    if (cursor.execute("""SELECT `address` FROM addresses WHERE `addr_id` = %s;""", addr_id)):
+        data = cursor.fetchall()
+        for row in data:
+            addr = row[0]
+            break
+    return str(addr)
+
 def get_address_id(addr):
     global connection 
     cursor = connection.cursor()
@@ -352,6 +370,24 @@ def get_address_degree(addr):
                     out_degree = row[1]
             break
     return (addr_id, in_degree, out_degree)
+
+def get_address_balance_by_id(addr_id):
+    global connection
+    cursor = connection.cursor()
+    
+    balance = 0
+    num_changes = 0
+    last_change_tx_id = None
+    
+    if (cursor.execute("""SELECT `balance`, `num_changes`, `last_change_tx_id` FROM balance WHERE `addr_id` = %s;""", addr_id)):
+        balance_data = cursor.fetchall()
+        for row in balance_data:
+            balance = row[0]
+            num_changes = row[1]
+            last_change_tx_id = row[2]
+            break
+    return (addr_id, balance, num_changes, last_change_tx_id)
+
 
 def get_address_balance(addr):
     global connection
@@ -536,8 +572,8 @@ def update_block_transaction_info(block_height):
         tx.num_inputs = len(vin)
         vout = tx_info["vout"]
         tx.num_outputs = len(vout)
-        tx.total_in_val = 0
-        tx.total_out_val = 0
+        tx.total_in_val = 0.0
+        tx.total_out_val = 0.0
         
 #         process vin
         txIns = []
@@ -579,7 +615,7 @@ def update_block_transaction_info(block_height):
                     else:
                         in_addrs =["Undecoded Input Address"]
                     
-                    val = float(prev_tx_vout["value"])
+                    val = double(prev_tx_vout["value"])
                     tx.total_in_val += val
                     txIn.vals.append(val)
                         
@@ -589,13 +625,13 @@ def update_block_transaction_info(block_height):
             
             if "coinbase" in vin[in_i].keys(): #adding coingen as an address in case of coinbase transaction
                 in_addrs.append("coingen")
-                txIn.vals.append(0) 
+                txIn.vals.append(0.0) 
             
             txIn.addrs = [] 
-            for i,a in enumerate(in_addrs):
+            for i,addr in enumerate(in_addrs):
                 if "coinbase" not in vin[in_i].keys():
-                    update_addresses(a)
-                    a = get_address_id(a)
+                    update_addresses(addr)
+                    a = get_address_id(addr)
                 else:
                     a = 0
                     
@@ -615,8 +651,8 @@ def update_block_transaction_info(block_height):
                         
 #                         update input address and its degree
                         if "coinbase" not in vin[in_i].keys():
-                            update_address_degree(a, 0, tx.num_outputs)
-                            update_address_balance(a, -val, tx.id, tx.block_time)
+                            update_address_degree(addr, 0, tx.num_outputs)
+                            update_address_balance(addr, -val, tx.id, tx.block_time)
                 
                     else:
                         print str(warning) + " -  Row already exists!! "
@@ -661,11 +697,11 @@ def update_block_transaction_info(block_height):
            
             txOut.addrs = []
             txOut.vals = []
-            for a in txOut.scriptPubKey.addrs:
+            for addr in txOut.scriptPubKey.addrs:
                 #update address table
-                update_addresses(a)
+                update_addresses(addr)
                 #get address_id from the address table
-                a = int(get_address_id(a))
+                a = int(get_address_id(addr))
                 
                 txOut.addrs.append(a)
                 val = float(vout[out_i]["value"])
@@ -685,8 +721,8 @@ def update_block_transaction_info(block_height):
                         print "Success inserting output transaction."
                         
 #                         update output address degree and balance
-                        update_address_degree(a, tx.num_inputs, 0)
-                        update_address_balance(a, val, tx.id, tx.block_time)
+                        update_address_degree(addr, tx.num_inputs, 0)
+                        update_address_balance(addr, val, tx.id, tx.block_time)
                 
                     else:
                         print str(warning) + " -  Row already exists!! "
@@ -737,75 +773,188 @@ def get_all_txids_for_block(block_id):
             info_tx_ids.append(tpl)
     return info_tx_ids
 
-def update_balance_table_for_addr(addr, val, increase):    
+def update_balance_table_for_addr(tx_id, addr_id, val, increase):    
     global connection 
     cursor = connection.cursor()
-    
-    addr_id = get_address_id()    
-    if (cursor.execute("""SELECT `balance` FROM balance WHERE `addr_id` = %s;""", str(addr))):
+                
+    (addr_id, old_balance, old_num_changes, last_change_tx_id) = get_address_balance_by_id(addr_id)
+            
+    if increase:
+        new_balance = old_balance + double(val)
+    else:
+        new_balance = old_balance - double(val)
+            
+    new_num_changes = old_num_changes - 1
+        
+    if tx_id == last_change_tx_id:
+        new_num_changes_unique_tx = old_num_changes - 1
+    else:
+        new_num_changes_unique_tx = old_num_changes
+        
+    last_change_tx_id = -1 # It will be updated next time balance gets inserted
+    last_change_time = -1
+            
+    warning = cursor.execute("""UPDATE balance SET `balance` = %s, `num_changes` = %s, `num_changes_unique_tx` = %s, `last_change_tx_id` = %s, `last_change_time` = %s WHERE `addr_id` = %s""", (str(new_balance), str(new_num_changes), str(new_num_changes_unique_tx), str(last_change_tx_id), str(last_change_time), str(addr_id)))
+    if warning:
+        print "Successfully updated the address balance."
+    else:
+#            print old_balance
+#            print val
+#            print new_balance
+        print "Failed to update the address balance."
+
+def update_out_degree_in_degree_table_for_addr(addr_id, num_outputs):
+    global connection 
+    cursor = connection.cursor()
+        
+    if (cursor.execute("""SELECT `out_degree` FROM degree WHERE `addr_id` = %s;""", str(addr_id))):
         data = cursor.fetchall()
         for row in data:
-            print row[0]
-#             old_balance = double(row[0])
-#             print old_balance
-#             if increase:
-#                 new_balance = old_balance + val
-#             else:
-#                 new_balance = old_balance - val
-#             print new_balance
-#             print ""
-#             warning = cursor.execute("""UPDATE balance SET `balance` = %s WHERE `addr_id` = %s;""", tx_id, new_balance)
-#             if warning:
-#                 print "Successfully updated the address balance."
-#             else:
-#                 print "Failed to update the address balance."
+            old_out_degree = int(row[0])
+            new_degree = old_out_degree - int(num_outputs)
+            
+            warning = cursor.execute("""UPDATE degree SET `out_degree` = %s WHERE `addr_id` = %s;""", (str(new_degree), str(addr_id)))
+            if warning:
+                print "Successfully decreased the out degree for the input address."
+            else:
+                print "Failed to update the out degree for the input address."
 
-def update_degree_table_for_addr(addr, num_outputs, out_degree):
+def update_in_degree_in_degree_table_for_addr(addr_id, num_inputs, in_degree):
     global connection 
     cursor = connection.cursor()
     
-    if out_degree:    
-        if (cursor.execute("""SELECT out_degree FROM degree WHERE `addr_id` = %s;""", addr)):
+    if in_degree:    
+        if (cursor.execute("""SELECT `in_degree` FROM degree WHERE `addr_id` = %s;""", str(addr_id))):
             data = cursor.fetchall()
             for row in data:
-                old_degree = row[0]
-                new_degree = old_degree - num_outputs
+                old_in_degree = int(row[0])
+                new_degree = old_in_degree - int(num_inputs)
             
-                warning = cursor.execute("""UPDATE degree SET `degree` = %s WHERE `addr_id` = %s;""", new_degree, addr)
+                warning = cursor.execute("""UPDATE degree SET `in_degree` = %s WHERE `addr_id` = %s;""", (str(new_degree), str(addr_id)))
                 if warning:
-                    print "Successfully decreased the out degree for the input address."
+                    print "Successfully decreased the in degree for the output address."
                 else:
-                    print "Failed to update the out degree for the input address."
+                    print "Failed to update the in degree for the output address."
+
 
 def update_tables_using_txin_table(info_tx_id):
     (tx_id, num_inputs, num_outputs) = info_tx_id
     
     global connection 
     cursor = connection.cursor()
-    tx_ids = []
-    if (cursor.execute("""SELECT tx_id, addr, val FROM tx_in WHERE `tx_id` = %s;""", tx_id)):
+    if (cursor.execute("""SELECT tx_id, addr, val FROM tx_in WHERE `tx_id` = %s ORDER BY tx_id DESC;""", tx_id)):
         data = cursor.fetchall()
         for row in data:
-            (tx_id, in_addr, in_val) = (row[0], row[1], row[2])
-            if "coingen" in in_addr:
+            (tx_id, in_addr_id, in_val) = (row[0], row[1], row[2])
+#             print "tx_id = ", tx_id
+#             print in_addr_id
+            if double(in_addr_id) == 0.0:
                 print "Nothing to do for coingen address."
             else:
-                print "Update"
-            update_balance_table_for_addr(in_addr, in_val, True)
-#             update_degree_table_for_addr(in_addr, num_inputs, True)
+                print "Update degree and blance for input address id ", in_addr_id
+                update_balance_table_for_addr(tx_id,in_addr_id, in_val, True)
+                update_out_degree_in_degree_table_for_addr(in_addr_id, num_outputs)
+                
+        
+    # To suppress warning for num_inputs
+    for i in range(num_inputs):
+        i = int(i) - 1000000
+        break
+    
+def update_tables_using_txout_table(info_tx_id):
+    (tx_id, num_inputs, num_outputs) = info_tx_id
+        
+    global connection 
+    cursor = connection.cursor()
+    
+    if (cursor.execute("""SELECT tx_id, addr, val FROM tx_out WHERE `tx_id` = %s ORDER BY tx_id DESC;""", tx_id)):
+        data = cursor.fetchall()
+        for row in data:
+            (tx_id, out_addr_id, out_val) = (row[0], row[1], row[2])
+#             print "tx_id = ", tx_id
+#             print out_addr_id
+            
+            print "Update degree and blance for output address id ", out_addr_id
+            update_balance_table_for_addr(tx_id, out_addr_id, out_val, False)
+            update_in_degree_in_degree_table_for_addr(out_addr_id, num_inputs, False)
+
+    # To suppress warning for num_outputs
+    for i in range(num_outputs):
+        i = int(i) - 10000000
+        break
 
 def delete_block_data_and_update_tables(block_id):
-    global height_in_db
-    #Get the last block id in the database
-    height_in_db = get_current_block_height_in_db()
+    global connection
+    cursor = connection.cursor()
+    
     #Get all the tx_ids for the last block
-    info_tx_ids = get_all_txids_for_block(height_in_db)
+    info_tx_ids = get_all_txids_for_block(block_id)
     #print info_tx_ids
-    # Get input addresses from tx_in
-    for info_tx_id in info_tx_ids:
+    
+    #Reverse the information of tx_ids
+    rev1_info_tx_ids = reversed(info_tx_ids) 
+    
+    for info_tx_id in rev1_info_tx_ids:
         update_tables_using_txin_table(info_tx_id)
+        update_tables_using_txout_table(info_tx_id)
+    
+    rev2_info_tx_ids = reversed(info_tx_ids) 
+    
+    for info_tx_id in rev2_info_tx_ids:
+        (tx_id, num_inputs, num_outputs) = info_tx_id
+         
+#         print "tx_id = ", tx_id
+        #Now delete the txs from tx_out table
+        warning = cursor.execute("""delete from tx_out where `tx_id` = %s;""", tx_id)
+        if warning:
+            print "Successfully deleted all the transactions from tx_out table."
+        else:
+            print "Failed to delete transactions from tx_out table."
+         
+        #Now delete the txs from tx_in table
+        warning = cursor.execute("""delete from tx_in where `tx_id` = %s ;""", tx_id)
+        if warning:
+            print "Successfully deleted all the transactions from tx_in table."
+        else:
+            print "Failed to delete transactions from tx_in table."
+             
+        #Now delete the txs from tx_in table
+#         print "tx_id = ", tx_id
+        warning = cursor.execute("""delete from tx where `tx_id` = %s ;""", tx_id)
+        if warning:
+            print "Successfully deleted all the transactions from tx table."
+        else:
+            print "Failed to delete transactions from tx table."
+    
+        # To suppress warning for unused num_inputs and num_outputs
+        for i in range(num_inputs):
+            i = int(i) - 10000000
+            break
+        for j in range(num_outputs):
+            j = int(j) - 10000000
+            break 
+    
+#     #Now delete the txs from tx_in table
+#     warning = cursor.execute("""delete from tx where `block_id` = %s ;""", block_id)
+#     if warning:
+#         print "Successfully deleted all the block transactions from tx table."
+#     else:
+#         print "Failed to delete block transactions from tx table."
+    
+     
+    # Finally delete the block info from block table
+    #Now delete the txs from tx_in table
+    print "block_id = ", block_id
+    warning = cursor.execute("""delete from block_info where `height` = %s ;""", block_id)
+    if warning:
+        print "Successfully deleted the block info."
+    else:
+        print "Failed to delete the block info."
+        
      
     
+    
+        
 def delete_all_data():
     global connection
     cursor = connection.cursor()
@@ -853,10 +1002,14 @@ def main():
     try:
         connect_to_my_SQL()
         connect_to_bitcoin_RPC()
-        #get_all_block_hashes_from_present_to_past()
-        #update_block_info()
-        #update_block_transaction_info(71036)
-        delete_block_data_and_update_tables(133074)
+        
+        #delete_all_data()
+        get_all_block_hashes_from_present_to_past()
+        update_block_info()
+        
+        #Experiment
+        #update_block_transaction_info(71036) 
+        #delete_block_data_and_update_tables(70208)
     except getopt.error, msg:
         print msg
         print "for help use --help"
