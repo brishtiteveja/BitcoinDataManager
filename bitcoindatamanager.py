@@ -3,9 +3,12 @@ import getopt
 
 import MySQLdb as mdb
 
-from bitcoinrpc.authproxy import AuthServiceProxy
+from block import *
+
+from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from pprint import pprint
 from numpy import double
+from _socket import timeout
 
 
 #Variable initial declaration
@@ -154,10 +157,14 @@ class Tx:
 
 def connect_to_bitcoin_RPC():
 #     rpc_user and rpc_password are set in the bitcoin.conf file
-    rpc_user = "bitcoinrpc"
-    rpc_password = "9RGmSw5dTkMq7Hm1r2pbBVauWoqfM8RXDoCBmoYGmno"
+#   data directory on cuda.cs.edu: /scratch2/azehady/data/bit
+    rpc_user = "brishtiteveja"
+    rpc_password = "aaanandaaa0595"
     global rpc_connection
-    rpc_connection = AuthServiceProxy("http://%s:%s@127.0.0.1:8332"%(rpc_user, rpc_password))
+    try:
+        rpc_connection = AuthServiceProxy("http://%s:%s@127.0.0.1:8332"%(rpc_user, rpc_password), timeout=1000)
+    except Exception as e:
+        print e
     return rpc_connection
 
 def get_current_block_height():
@@ -219,7 +226,11 @@ def get_block_time(block_height):
 
 def connect_to_my_SQL():
     global connection
-    connection = mdb.connect('127.0.0.1', 'root', 'AAAnandaaa05950233;', 'brishtit_bitcoin');
+    
+    connection = mdb.connect(host = 'localhost', 
+                             user ='root', 
+                             passwd='aaanandaaa0595', 
+                             db='bitcoin',read_default_file="~/.my.cnf");
     
 def get_current_block_height_in_db():
     height_in_db = -1
@@ -234,6 +245,7 @@ def get_current_block_height_in_db():
     return height_in_db 
 
 def get_block_info(block_hash, height = 0):
+    global rpc_connection
     blk = rpc_connection.getblock(block_hash)
     
     block = Block();
@@ -280,7 +292,7 @@ def update_block_info():
     
     # deleteing last two blocks and updating balance and degree table before synchronizing again
     if height_in_db != None and height_in_db >= 2:
-        for blk_id in xrange(height_in_db - 2 + 1, height_in_db + 1):
+        for blk_id in xrange(int(height_in_db) - 2 + 1, int(height_in_db) + 1):
             delete_block_data_and_update_tables(blk_id)
     
     height_in_db = get_current_block_height_in_db()
@@ -288,10 +300,10 @@ def update_block_info():
         height_in_db = 0
     
     global block_height
-    if (height_in_db + 1 == block_height):
+    if (int(height_in_db) + 1 == int(block_height)):
         print "All blocks are up to date."
                                            
-    for height in xrange(height_in_db + 1, block_height + 1):
+    for height in xrange(int(height_in_db) + 1, int(block_height) + 1):
         block_hash = block_hashes[height]
         block = get_block_info(block_hash, height)
 #         print_block_info(block)
@@ -308,7 +320,7 @@ def update_block_info():
             if warning:
                 print "Success inserting block at height ", height
 #                 updating all other tables: tx, txin, txout, addresses, degree, balance, address_graph
-                update_block_transaction_info(height)
+                #update_block_transaction_info(height)
                 print "All transaction for block at ", height, " is completed."
 #              
             else:
@@ -556,7 +568,7 @@ def update_block_transaction_info(block_height):
         else:
             tx_id = 0
         
-            
+
         tx.id = str(tx_id)
         tx.hash = tx_info["txid"]
         tx.block_id = block_height
@@ -766,7 +778,7 @@ def get_all_txids_for_block(block_id):
     global connection 
     cursor = connection.cursor()
     info_tx_ids = []
-    if (cursor.execute("""SELECT `tx_id`,`num_inputs`,`num_outputs` FROM tx WHERE `block_id` = %s;""", block_id)):
+    if (cursor.execute("""SELECT `tx_id`,`num_inputs`,`num_outputs` FROM tx WHERE `block_id` = %s;""", str(block_id))):
         data = cursor.fetchall()
         for row in data:
             tpl = (row[0],row[1],row[2])
@@ -945,7 +957,7 @@ def delete_block_data_and_update_tables(block_id):
     # Finally delete the block info from block table
     #Now delete the txs from tx_in table
     print "block_id = ", block_id
-    warning = cursor.execute("""delete from block_info where `height` = %s ;""", block_id)
+    warning = cursor.execute("""delete from block_info where `height` = %s ;""", str(block_id))
     if warning:
         print "Successfully deleted the block info."
     else:
@@ -996,17 +1008,202 @@ def delete_all_data():
         
     if table_delete_count == 12:
         print "All data deleted."
+
+def check_table_exists(tablename):
+    global connection, mdb
+    cursor = connection.cursor()
+    try:
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = '{0}'
+            """.format(tablename.replace('\'', '\'\'')))
+    except mdb.Error,e:
+            try:
+                print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+            except IndexError:
+                print "MySQL Error: %s" % str(e)
+                sys.exit(1)
+                
+    if cursor.fetchone()[0] == 1:
+        cursor.close()
+        return True
+
+    cursor.close()
+    return False        
+
+def drop_all_tables_from_bitcoin_db():
+    global connection, mdb
+    cursor = connection.cursor()
+    try:
+        command = """SELECT CONCAT('DROP TABLE ', TABLE_NAME, ';') FROM INFORMATION_SCHEMA.tables  WHERE TABLE_SCHEMA = 'bitcoin'"""
+        cursor.execute(command)
+        results = cursor.fetchall()
+        for result in results:
+            result = str(result)
+            command = result[2:len(result)-3]
+            cursor.execute(command)
+    except mdb.Error,e:
+        try:
+            print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+        except IndexError:
+            print "MySQL Error: %s" % str(e)
+            sys.exit(1)
+    cursor.close()
+            
+def create_table_in_bitcoin_db():
+    global connection, mdb
+    cursor = connection.cursor()
+    TABLES = {}
+    TABLES['block_info'] = (
+                            "CREATE TABLE `block_info` ("
+                                "  `height` varchar(35),"
+                                "  `hash` varchar(35),"
+                                "  `next_block_hash` varchar(35),"
+                                "  `time` varchar(35),"
+                                "  `difficulty` varchar(35),"
+                                "  `bits` varchar(35),"
+                                "  `num_tx` varchar(35),"
+                                "  `size` varchar(35),"
+                                "  `merkle_root` varchar(35),"
+                                "  `nonce` varchar(35),"
+                                "  `version` varchar(35),"
+                                "  `confirmations` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['tx'] =      (
+                            "CREATE TABLE `tx` ("
+                                "  `tx_id` varchar(35),"
+                                "  `hash` varchar(35),"
+                                "  `block_id` varchar(35),"
+                                "  `block_time` varchar(35),"
+                                "  `locktime` varchar(35),"
+                                "  `version` varchar(35),"
+                                "  `num_inputs` varchar(35),"
+                                "  `num_outputs` varchar(35),"
+                                "  `total_in_val` varchar(35),"
+                                "  `total_out_val` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['tx_in'] =      (
+                            "CREATE TABLE `tx_in` ("
+                                "  `tx_id` varchar(35),"
+                                "  `n` varchar(35),"
+                                "  `addr` varchar(35),"
+                                "  `coinbase` varchar(35),"
+                                "  `scriptSig_asm` varchar(35),"
+                                "  `scriptSig_hex` varchar(35),"
+                                "  `sequence` varchar(35),"
+                                "  `tx_hash_prev` varchar(35),"
+                                "  `vout_prev` varchar(35),"
+                                "  `val` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['tx_out'] =      (
+                            "CREATE TABLE `tx_out` ("
+                                "  `tx_id` varchar(35),"
+                                "  `n` varchar(35),"
+                                "  `addr` varchar(35),"
+                                "  `scriptPubKey_asm` varchar(35),"
+                                "  `scriptPubKey_hex` varchar(35),"
+                                "  `reqSigs` varchar(35),"
+                                "  `type` varchar(35),"
+                                "  `val` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['addresses'] =      (
+                            "CREATE TABLE `addresses` ("
+                                "  `addr_id` varchar(35),"
+                                "  `address` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['users_h1'] =      (
+                            "CREATE TABLE `users_h1` ("
+                                "  `addr_id` varchar(35),"
+                                "  `user_id` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['users_h2'] =      (
+                            "CREATE TABLE `users_h2` ("
+                                "  `addr_id` varchar(35),"
+                                "  `user_id` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['users_potential'] =      (
+                            "CREATE TABLE `users_potential` ("
+                                "  `addr_id` varchar(35),"
+                                "  `potential_user_id_list` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['address_graph'] =      (
+                            "CREATE TABLE `address_graph` ("
+                                "  `tx_id` varchar(35),"
+                                "  `in_addr_id` varchar(35),"
+                                "  `in_val` varchar(35),"
+                                "  `out_addr_id` varchar(35),"
+                                "  `out_val` varchar(35),"
+                                "  `tx_time` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['user_graph'] =      (
+                            "CREATE TABLE `user_graph` ("
+                                "  `in_user_id` varchar(35),"
+                                "  `out_user_id` varchar(35),"
+                                "  `val` varchar(35),"
+                                "  `n_tx` varchar(35),"
+                                "  `tx_id_list` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['degree'] =      (
+                            "CREATE TABLE `degree` ("
+                                "  `addr_id` varchar(35),"
+                                "  `in_degree` varchar(35),"
+                                "  `out_degree` varchar(35)"
+                                ") ENGINE=InnoDB")
+
+    TABLES['balance'] =      (
+                            "CREATE TABLE `balance` ("
+                                "  `addr_id` varchar(35),"
+                                "  `balance` varchar(35),"
+                                "  `num_changes` varchar(35),"
+                                "  `num_changes_unique_tx` varchar(35),"
+                                "  `last_change_tx_id` varchar(35),"
+                                "  `last_change_time` varchar(35)"
+                                ") ENGINE=InnoDB")
     
+    for tablename, ddl in TABLES.iteritems():
+        try:
+            if not check_table_exists(tablename):
+                print "Creating table ", tablename, " in bitcoin database. "
+                cursor.execute(ddl)
+            else: 
+                print "Table", tablename, " already exists."
+        except mdb.Error,e:
+            print mdb.Error
+            try:
+                print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+            except IndexError:
+                print "MySQL Error: %s" % str(e)
+        
+    cursor.close()
 def main():
 #     parse command line options
     try:
         connect_to_my_SQL()
         connect_to_bitcoin_RPC()
         
-        #delete_all_data()
-        get_all_block_hashes_from_present_to_past()
-        update_block_info()
+        print 'Deleting all tables from bitcoin database.'
+        drop_all_tables_from_bitcoin_db()
         
+        print 'Creating tables in bitcoin database.'
+        create_table_in_bitcoin_db()
+        #delete_all_data()
+        
+        print 'Getting all block hashes.'
+        get_all_block_hashes_from_present_to_past()
+        
+        print 'Updating block info.'
+        update_block_info()
         #Experiment
         #update_block_transaction_info(71036) 
         #delete_block_data_and_update_tables(70208)
@@ -1016,5 +1213,6 @@ def main():
         sys.exit(2)
 
 if __name__ == "__main__":
-    main()  
+#    parseBlockFile("/scratch2/azehady/data/bit/blocks/blk00003.dat")
+     main()  
     
