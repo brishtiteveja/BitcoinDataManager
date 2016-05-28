@@ -179,7 +179,7 @@ def get_current_block_height():
 def get_current_total_transaction():
     global connection, tx_id
     cursor = connection.cursor()
-    if (cursor.execute("""SELECT MAX(tx_id) from tx;""")):
+    if (cursor.execute("""SELECT COUNT(hash) from tx;""")):
         data = cursor.fetchall()
         for row in data:
             tx_id = row[0]
@@ -189,7 +189,7 @@ def get_current_total_transaction():
 def get_current_total_address():
     global connection, addr_id
     cursor = connection.cursor()
-    if (cursor.execute("""SELECT MAX(addr_id) from addresses;""")):
+    if (cursor.execute("""SELECT COUNT(address) from addresses;""")):
         data = cursor.fetchall()
         for row in data:
             addr_id = row[0]
@@ -320,7 +320,7 @@ def update_block_info():
             if warning:
                 print "Success inserting block at height ", height
 #                 updating all other tables: tx, txin, txout, addresses, degree, balance, address_graph
-                #update_block_transaction_info(height)
+                update_block_transaction_info(height)
                 print "All transaction for block at ", height, " is completed."
 #              
             else:
@@ -337,7 +337,11 @@ def update_block_info():
 
 def get_transaction_info(tx_hash):
     commands = [ [ "getrawtransaction", tx_hash ] ]
-    raw_tx = rpc_connection.batch_(commands)[0]
+    try:
+        raw_tx = rpc_connection.batch_(commands)[0]
+    except:
+        print 'No information available about transaction'
+        return None
     commands = commands = [ [ "decoderawtransaction", raw_tx ] ]
     tx = rpc_connection.batch_(commands)[0]
     return tx
@@ -346,7 +350,7 @@ def get_address_from_id(addr_id):
     global connection 
     cursor = connection.cursor()
     addr = None 
-    if (cursor.execute("""SELECT `address` FROM addresses WHERE `addr_id` = %s;""", addr_id)):
+    if (cursor.execute("""SELECT `address` FROM addresses WHERE `addr_id` = '%s';""", addr_id)):
         data = cursor.fetchall()
         for row in data:
             addr = row[0]
@@ -357,11 +361,21 @@ def get_address_id(addr):
     global connection 
     cursor = connection.cursor()
     addr_id = None 
-    if (cursor.execute("""SELECT `addr_id` FROM addresses WHERE `address` = %s;""", addr)):
-        data = cursor.fetchall()
-        for row in data:
-            addr_id = row[0]
-            break
+    try:
+        addr = str(addr)
+        command = 'SELECT `addr_id` FROM addresses WHERE `address` = \"' + str(addr) + '\";'
+        if (cursor.execute(command)):
+            data = cursor.fetchall()
+            for row in data:
+                addr_id = row[0]
+                break
+    except mdb.Error, e:
+        try:
+            print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+        except IndexError:
+            print "MySQL Error: %s" % str(e)
+            sys.exit(1)    
+
     return addr_id
 
 
@@ -371,16 +385,27 @@ def get_address_degree(addr):
     addr_id = None 
     in_degree = 0
     out_degree = 0
-    if (cursor.execute("""SELECT `addr_id` FROM addresses WHERE `address` = %s;""", addr)):
-        data = cursor.fetchall()
-        for row in data:
-            addr_id = row[0]
-            if (cursor.execute("""SELECT `in_degree`, `out_degree` FROM degree WHERE `addr_id` = %s;""", addr_id)):
-                degree_data = cursor.fetchall()
-                for row in degree_data:
-                    in_degree = row[0]
-                    out_degree = row[1]
-            break
+    
+    try:
+        command = 'SELECT `addr_id` FROM addresses WHERE `address` = \"' + str(addr) + '\";'
+        if (cursor.execute(command)):
+            data = cursor.fetchall()
+            for row in data:
+                addr_id = row[0]
+                command = 'SELECT `in_degree`, `out_degree` FROM degree WHERE `addr_id` = ' + str(addr_id) +';';
+                if (cursor.execute(command)):
+                    degree_data = cursor.fetchall()
+                    for row in degree_data:
+                        in_degree = row[0]
+                        out_degree = row[1]
+                break
+    except mdb.Error, e:
+        try:
+            print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+        except IndexError:
+            print "MySQL Error: %s" % str(e)
+            sys.exit(1)   
+        
     return (addr_id, in_degree, out_degree)
 
 def get_address_balance_by_id(addr_id):
@@ -391,13 +416,21 @@ def get_address_balance_by_id(addr_id):
     num_changes = 0
     last_change_tx_id = None
     
-    if (cursor.execute("""SELECT `balance`, `num_changes`, `last_change_tx_id` FROM balance WHERE `addr_id` = %s;""", addr_id)):
-        balance_data = cursor.fetchall()
-        for row in balance_data:
-            balance = row[0]
-            num_changes = row[1]
-            last_change_tx_id = row[2]
-            break
+    try:
+        if (cursor.execute("""SELECT `balance`, `num_changes`, `last_change_tx_id` FROM balance WHERE `addr_id` = %s;""", addr_id)):
+            balance_data = cursor.fetchall()
+            for row in balance_data:
+                balance = row[0]
+                num_changes = row[1]
+                last_change_tx_id = row[2]
+                break
+    except mdb.Error, e:
+        try:
+            print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+        except IndexError:
+            print "MySQL Error: %s" % str(e)
+            sys.exit(1)   
+            
     return (addr_id, balance, num_changes, last_change_tx_id)
 
 
@@ -408,22 +441,38 @@ def get_address_balance(addr):
     balance = 0
     num_changes = 0
     last_change_tx_id = None
-    if (cursor.execute("""SELECT `addr_id` FROM addresses WHERE `address` = %s;""", addr)):
-        data = cursor.fetchall()
-        for row in data:
-            addr_id = row[0]
-            if (cursor.execute("""SELECT `balance`, `num_changes`, `last_change_tx_id` FROM balance WHERE `addr_id` = %s;""", addr_id)):
-                balance_data = cursor.fetchall()
-                for row in balance_data:
-                    balance = row[0]
-                    num_changes = row[1]
-                    last_change_tx_id = row[2]
-            break
+    
+    try:
+        command = 'SELECT `addr_id` FROM addresses WHERE `address` = \"' + str(addr) + '\";'
+        if (cursor.execute(command)):
+            data = cursor.fetchall()
+            for row in data:
+                addr_id = row[0]
+                command = 'SELECT `balance`, `num_changes`, `last_change_tx_id` FROM balance WHERE `addr_id` = \"' + str(addr_id) + '\";'
+                if (cursor.execute(command)):
+                    balance_data = cursor.fetchall()
+                    for row in balance_data:
+                        balance = row[0]
+                        num_changes = row[1]
+                        last_change_tx_id = row[2]
+                break
+    except mdb.Error, e:
+        try:
+            print "MySQL Error [%d]: %s" % (e.args[0], e.args[1])
+        except IndexError:
+            print "MySQL Error: %s" % str(e)
+            sys.exit(1)   
+            
     return (addr_id, balance, num_changes, last_change_tx_id)
 
 def update_address_balance(addr, val, tx_id, time):
 #    trying to update in and out degrees of each address
     (addr_id, old_balance, old_num_changes, last_change_tx_id) = get_address_balance(addr)
+    
+    old_balance = int(old_balance)
+    old_num_changes = int(old_num_changes)
+    val = int(val)
+    
     new_balance = old_balance + val
     new_num_changes = old_num_changes + 1
     if tx_id != last_change_tx_id:
@@ -459,8 +508,8 @@ def update_address_balance(addr, val, tx_id, time):
 def update_address_degree(addr, in_degree, out_degree):
 #    trying to update in and out degrees of each address
     (addr_id, old_in_degree, old_out_degree) = get_address_degree(addr)
-    new_in_degree = old_in_degree + in_degree
-    new_out_degree = old_out_degree + out_degree
+    new_in_degree = int(old_in_degree) + int(in_degree)
+    new_out_degree = int(old_out_degree) + int(out_degree)
     try: 
         global connection
         cursor = connection.cursor()
@@ -557,7 +606,11 @@ def update_block_transaction_info(block_height):
     
     for i in range(num_tx):
         tx_info = get_transaction_info(tx_hashes[i])
-        pprint(tx_info)
+        
+        if tx_info == None:
+            continue
+        
+        #pprint(tx_info)
         tx = Tx()
         
         global tx_id
@@ -615,6 +668,8 @@ def update_block_transaction_info(block_height):
             if "txid" in vin[in_i].keys():           
                 txIn.tx_hash_prev = vin[in_i]["txid"]
                 prev_tx = get_transaction_info(txIn.tx_hash_prev)
+                if prev_tx == None:
+                    continue
             
                 if "vout" in vin[in_i].keys():
                     txIn.vout_prev = vin[in_i]["vout"]
@@ -755,15 +810,13 @@ def update_block_transaction_info(block_height):
 #        trying to insert into tx table
         try: 
             cursor = connection.cursor()
-            warning = cursor.execute("""INSERT IGNORE INTO `tx`(`tx_id`, `hash`, `block_id`, `block_time`,
-                `locktime`, `version`, `num_inputs`, `num_outputs`, `total_in_val`, `total_out_val`) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);""", 
-                (tx.id, tx.hash, tx.block_id, tx.block_time, tx.locktime, tx.version, 
-                 tx.num_inputs, tx.num_outputs, tx.total_in_val, tx.total_out_val))
+            command = 'INSERT INTO `tx`(`tx_id`, `hash`, `block_id`, `block_time`, `locktime`, `version`, `num_inputs`, `num_outputs`, `total_in_val`, `total_out_val`) VALUES (' + str(tx.id) + ', \"' + str(tx.hash) + '\", ' + str(tx.block_id) + ', ' + str(tx.block_time) + ', '  + str(tx.locktime) + ', ' + str(tx.version) +', ' + str(tx.num_inputs) + ', ' + str(tx.num_outputs) + ', ' +  str(tx.total_in_val) + ', ' + str(tx.total_out_val) + ');'
+            warning = cursor.execute(command);
+            
             if warning:
                 print "Success inserting transaction."
             else:
-                print str(warning) + " -  Row already exists!! "
+                print str(warning) + " -  Row may already exist!! "
                 print "Failed to insert transaction."
                 break
             connection.commit()
@@ -1057,9 +1110,9 @@ def create_table_in_bitcoin_db():
     TABLES = {}
     TABLES['block_info'] = (
                             "CREATE TABLE `block_info` ("
-                                "  `height` varchar(35),"
-                                "  `hash` varchar(35),"
-                                "  `next_block_hash` varchar(35),"
+                                "  `height` varchar(35) unique,"
+                                "  `hash` varchar(100) unique,"
+                                "  `next_block_hash` varchar(100),"
                                 "  `time` varchar(35),"
                                 "  `difficulty` varchar(35),"
                                 "  `bits` varchar(35),"
@@ -1073,8 +1126,8 @@ def create_table_in_bitcoin_db():
 
     TABLES['tx'] =      (
                             "CREATE TABLE `tx` ("
-                                "  `tx_id` varchar(35),"
-                                "  `hash` varchar(35),"
+                                "  `tx_id` varchar(35) unique,"
+                                "  `hash` varchar(100) unique,"
                                 "  `block_id` varchar(35),"
                                 "  `block_time` varchar(35),"
                                 "  `locktime` varchar(35),"
@@ -1094,7 +1147,7 @@ def create_table_in_bitcoin_db():
                                 "  `scriptSig_asm` varchar(35),"
                                 "  `scriptSig_hex` varchar(35),"
                                 "  `sequence` varchar(35),"
-                                "  `tx_hash_prev` varchar(35),"
+                                "  `tx_hash_prev` varchar(100),"
                                 "  `vout_prev` varchar(35),"
                                 "  `val` varchar(35)"
                                 ") ENGINE=InnoDB")
@@ -1113,8 +1166,8 @@ def create_table_in_bitcoin_db():
 
     TABLES['addresses'] =      (
                             "CREATE TABLE `addresses` ("
-                                "  `addr_id` varchar(35),"
-                                "  `address` varchar(35)"
+                                "  `addr_id` varchar(35) unique,"
+                                "  `address` varchar(35) unique"
                                 ") ENGINE=InnoDB")
 
     TABLES['users_h1'] =      (
@@ -1156,14 +1209,14 @@ def create_table_in_bitcoin_db():
 
     TABLES['degree'] =      (
                             "CREATE TABLE `degree` ("
-                                "  `addr_id` varchar(35),"
+                                "  `addr_id` varchar(35) unique,"
                                 "  `in_degree` varchar(35),"
                                 "  `out_degree` varchar(35)"
                                 ") ENGINE=InnoDB")
 
     TABLES['balance'] =      (
                             "CREATE TABLE `balance` ("
-                                "  `addr_id` varchar(35),"
+                                "  `addr_id` varchar(35) unique,"
                                 "  `balance` varchar(35),"
                                 "  `num_changes` varchar(35),"
                                 "  `num_changes_unique_tx` varchar(35),"
